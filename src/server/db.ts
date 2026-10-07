@@ -14,8 +14,13 @@ export function getPool(): Pool {
     if (!connectionString) {
       throw new ApiError(503, "NOT_CONFIGURED", "Online play isn't set up on this server yet.");
     }
+    const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString);
     const pool = new Pool({
       connectionString,
+      // Always encrypt traffic to a remote database. Supabase signs its certificates with
+      // its own CA, so the chain isn't verified here; add `sslmode=verify-full` (plus the
+      // CA) to the URL for full verification, which takes precedence over this default.
+      ssl: isLocal ? undefined : { rejectUnauthorized: false },
       max: Number(process.env.DATABASE_POOL_MAX ?? 5),
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
