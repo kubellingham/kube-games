@@ -80,7 +80,8 @@ function LeaveControl({ status, leaving, onLeave }: { status: RoomStatus; leavin
 /** Generic online room: connection, waiting room, join prompt and errors; the game renders inside. */
 export function RoomScreen({ game, code }: { game: GameDefinition; code: string }) {
   const router = useRouter();
-  const { load, connection, onlineIds, refresh, join, act, rematch, leave } = useGameRoom(code);
+  const { load, connection, onlineIds, signals, sendSignal, refresh, join, act, rematch, start, leave } =
+    useGameRoom(code);
   const [leaving, setLeaving] = useState(false);
   const lobbyHref = gameRoutes.online(game.id);
 
@@ -143,6 +144,8 @@ export function RoomScreen({ game, code }: { game: GameDefinition; code: string 
   }
 
   const Online = GAME_COMPONENTS[game.id]?.Online;
+  const others = snapshot.players.filter((p) => p.userId !== snapshot.you.userId && !p.hasLeft);
+  const awayNames = awayPlayers.map((p) => p.displayName).join(", ");
 
   return (
     <div className="flex flex-col gap-5">
@@ -155,9 +158,8 @@ export function RoomScreen({ game, code }: { game: GameDefinition; code: string 
       </div>
 
       {justStarted && !joinNoticeExpired && (
-        <GameStatus tone="success" icon="🎉" title="Opponent joined!">
-          {snapshot.players.find((p) => p.userId !== snapshot.you.userId)?.displayName ?? "Your opponent"} is here.
-          Game on!
+        <GameStatus tone="success" icon="🎉" title={others.length === 1 ? "Opponent joined!" : "Everyone's in!"}>
+          {others.length === 1 ? `${others[0].displayName} is here.` : `${others.length + 1} players.`} Game on!
         </GameStatus>
       )}
       {connection === "reconnecting" && (
@@ -166,15 +168,24 @@ export function RoomScreen({ game, code }: { game: GameDefinition; code: string 
         </GameStatus>
       )}
       {opponentAway && (
-        <GameStatus tone="warning" icon="📡" title="Opponent disconnected">
+        <GameStatus tone="warning" icon="📡" title={`${awayNames} disconnected`}>
           Waiting for them to reconnect. You can keep waiting or leave the game.
         </GameStatus>
       )}
 
       {snapshot.status === "waiting" || !snapshot.game ? (
-        <WaitingRoom room={snapshot} />
+        <WaitingRoom room={snapshot} onStart={start} />
       ) : Online ? (
-        <Online room={snapshot} act={act} rematch={rematch} onlineIds={onlineIds} leave={exitRoom} />
+        <Online
+          room={snapshot}
+          act={act}
+          rematch={rematch}
+          onlineIds={onlineIds}
+          signals={signals}
+          sendSignal={sendSignal}
+          clockOffset={load.clockOffset}
+          leave={exitRoom}
+        />
       ) : (
         <StatePanel icon="🚧" title="Online play isn't available for this game yet" />
       )}

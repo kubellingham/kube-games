@@ -1,6 +1,7 @@
 import dynamic from "next/dynamic";
 import type { ComponentType } from "react";
 import { GameLoading } from "./components/game-loading";
+import type { RoomSignal } from "./multiplayer/client/use-game-room";
 import type { RoomSnapshot } from "./multiplayer/types";
 import { DEFAULT_RPS_OPTIONS } from "./rock-paper-scissors/multiplayer/types";
 
@@ -10,6 +11,12 @@ export interface OnlineGameProps {
   rematch: () => Promise<void>;
   /** Players who currently have the room open, or null until presence is known. */
   onlineIds: ReadonlySet<string> | null;
+  /** Latest cosmetic signal from each other player (e.g. "holding the dice"). */
+  signals: Readonly<Record<string, RoomSignal>>;
+  /** Broadcasts a cosmetic signal to the other players; never decides game state. */
+  sendSignal: (data: unknown) => void;
+  /** Server clock minus this device's clock, in ms, for countdowns to server deadlines. */
+  clockOffset: number;
   /** Leaves the room (notifying the other players) and returns to the lobby. */
   leave: () => void;
 }
@@ -47,5 +54,14 @@ export const GAME_COMPONENTS: Readonly<Record<string, GameComponents>> = {
     }),
     RoomOptions: dynamic(() => import("./rock-paper-scissors/components/room-options").then((m) => m.RoomOptions)),
     defaultRoomOptions: DEFAULT_RPS_OPTIONS,
+  },
+  "snakes-and-ladders": {
+    Computer: dynamic(
+      () => import("./snakes-and-ladders/components/computer-game").then((m) => m.ComputerGame),
+      { loading },
+    ),
+    Online: dynamic(() => import("./snakes-and-ladders/components/online-game").then((m) => m.OnlineGame), {
+      loading,
+    }),
   },
 };

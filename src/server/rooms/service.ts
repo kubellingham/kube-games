@@ -1,6 +1,6 @@
 import "server-only";
 import { randomInt } from "node:crypto";
-import type { EnginePlayer, GameEngine } from "@/games/multiplayer/engine";
+import type { EngineEnvironment, EnginePlayer, GameEngine } from "@/games/multiplayer/engine";
 import {
   generateRoomCode,
   isValidRoomCode,
@@ -9,6 +9,7 @@ import {
 } from "@/games/multiplayer/rules";
 import type { RoomEndReason, RoomPreview, RoomSnapshot, RoomStatus } from "@/games/multiplayer/types";
 import { getGame } from "@/games/registry";
+import { secureRandom } from "@/lib/random";
 import { getPool, withTransaction, type Db } from "../db";
 import { ApiError } from "../http";
 import { getOnlineEngine } from "./engines";
@@ -88,6 +89,11 @@ function engineFor(room: RoomRow): GameEngine {
   return engine;
 }
 
+/** Server-side randomness and time for engines; clients never decide either. */
+function engineEnvironment(): EngineEnvironment {
+  return { random: secureRandom, now: Date.now() };
+}
+
 const toJson = (value: unknown) => (value === null || value === undefined ? null : JSON.stringify(value));
 
 function enginePlayers(players: PlayerRow[]): EnginePlayer[] {
@@ -108,6 +114,7 @@ function toSnapshot(room: RoomRow, players: PlayerRow[], viewerId: string): Room
     status: room.status,
     endedReason: room.ended_reason,
     isPublic: room.is_public,
+    minPlayers: Math.min(getOnlineEngine(room.game_id)?.minPlayers ?? room.max_players, room.max_players),
     maxPlayers: room.max_players,
     options: room.options,
     version: room.version,
@@ -122,6 +129,7 @@ function toSnapshot(room: RoomRow, players: PlayerRow[], viewerId: string): Room
     you: { userId: viewerId, seat: viewer.seat },
     // Only the viewer's own secret is ever included, never another player's.
     game: room.state === null ? null : { state: room.state, secret: viewer.secret_state ?? null },
+    serverTime: Date.now(),
   };
 }
 
@@ -219,6 +227,7 @@ async function insertRoom(
   engine: GameEngine,
   options: unknown,
   isPublic: boolean,
+  maxPlayers: number,
 ): Promise<RoomSnapshot> {
   // A player hosts at most one waiting room; opening a new one replaces the old.
   await db.query(
@@ -235,7 +244,7 @@ async function insertRoom(
        values ($1, $2, $3, $4, $5::jsonb)
        on conflict (code) do nothing
        returning ${roomColumns()}`,
-      [code, engine.gameId, isPublic, engine.seats, JSON.stringify(options)],
+      [code, engine.gameId, isPublic, maxPlayers, JSON.stringify(options)],
     );
     const room = rows[0];
     if (!room) continue; // Code already in use; try another.
@@ -249,6 +258,19 @@ async function insertRoom(
     return toSnapshot(room, players, userId);
   }
   throw new Error("Could not allocate a unique room code");
+}
+
+/** Starts (or restarts) the game in a locked room with everyone currently seated. */
+async function beginMatch(db: Db, room: RoomRow, players: PlayerRow[], engine: GameEngine) {
+  const start = engine.start(enginePlayers(players), room.options, engineEnvironment());
+  const updatedPlayers = await saveSecrets(db, room.id, players, start.secrets);
+  const started = await updateRoom(db, room, {
+    status: "playing",
+    endedReason: null,
+    state: start.state,
+    rematchVotes: [],
+  });
+  return { room: started, players: updatedPlayers };
 }
 
 /** Seats a player in a locked room, starting the game once every seat is filled. */
@@ -287,16 +309,14 @@ async function seatPlayer(
      returning ${PLAYER_COLUMNS}`,
     [room.id, userId, seat, displayName],
   );
-  let seated = [...players, rows[0]].sort((a, b) => a.seat - b.seat);
+  const seated = [...players, rows[0]].sort((a, b) => a.seat - b.seat);
 
-  if (seated.filter(isActive).length < engine.seats) {
+  if (seated.filter(isActive).length < room.max_players) {
     return toSnapshot(await updateRoom(db, room, {}), seated, userId);
   }
 
-  const start = engine.start(enginePlayers(seated), room.options);
-  seated = await saveSecrets(db, room.id, seated, start.secrets);
-  const started = await updateRoom(db, room, { status: "playing", state: start.state });
-  return toSnapshot(started, seated, userId);
+  const started = await beginMatch(db, room, seated, engine);
+  return toSnapshot(started.room, started.players, userId);
 }
 
 export async function createRoom(
@@ -306,7 +326,9 @@ export async function createRoom(
   const engine = requireEngine(input.gameId);
   const displayName = requireDisplayName(input.displayName);
   const options = engine.parseOptions(input.options);
-  return withTransaction((db) => insertRoom(db, userId, displayName, engine, options, false));
+  return withTransaction((db) =>
+    insertRoom(db, userId, displayName, engine, options, false, engine.maxPlayers),
+  );
 }
 
 export async function quickMatch(
@@ -357,7 +379,8 @@ export async function quickMatch(
       return seatPlayer(db, open[0], await loadPlayers(db, open[0].id), userId, displayName, engine);
     }
 
-    return insertRoom(db, userId, displayName, engine, engine.parseOptions(undefined), true);
+    // Quick-match rooms start as soon as the smallest possible game can be played.
+    return insertRoom(db, userId, displayName, engine, engine.parseOptions(undefined), true, engine.minPlayers);
   });
 }
 
@@ -368,6 +391,33 @@ export async function joinRoom(userId: string, rawCode: string, input: { display
     const room = await lockRoom(db, code);
     if (!room) throw roomNotFound();
     return seatPlayer(db, room, await loadPlayers(db, room.id), userId, displayName, engineFor(room));
+  });
+}
+
+/** Lets the host start a game that is waiting for more players, once enough have joined. */
+export async function startGame(userId: string, rawCode: string): Promise<RoomSnapshot> {
+  const code = requireCode(rawCode);
+  return withTransaction(async (db) => {
+    const { room, players } = await lockMembership(db, code, userId);
+    const engine = engineFor(room);
+    if (room.status !== "waiting") {
+      // Someone else (or the room filling up) started it first; nothing to do.
+      if (room.status === "playing") return toSnapshot(room, players, userId);
+      throw new ApiError(409, "GAME_NOT_ACTIVE", "This game is over.");
+    }
+    if (players.find((p) => p.user_id === userId)?.seat !== 0) {
+      throw new ApiError(403, "NOT_HOST", "Only the host can start the game.");
+    }
+    const seated = players.filter(isActive).length;
+    if (seated < engine.minPlayers) {
+      throw new ApiError(
+        409,
+        "NOT_ENOUGH_PLAYERS",
+        `Wait for at least ${engine.minPlayers} players to join before starting.`,
+      );
+    }
+    const started = await beginMatch(db, room, players, engine);
+    return toSnapshot(started.room, started.players, userId);
   });
 }
 
@@ -394,12 +444,18 @@ export async function performAction(userId: string, rawCode: string, rawAction: 
       throw new ApiError(
         409,
         "GAME_NOT_ACTIVE",
-        room.status === "waiting" ? "The game starts once your opponent joins." : "This game is over.",
+        room.status === "waiting" ? "The game hasn't started yet." : "This game is over.",
       );
     }
     const engine = engineFor(room);
     const result = engine.applyAction(
-      { state: room.state, options: room.options, players: enginePlayers(players), secrets: secretsOf(players) },
+      {
+        state: room.state,
+        options: room.options,
+        players: enginePlayers(players),
+        secrets: secretsOf(players),
+        ...engineEnvironment(),
+      },
       userId,
       engine.parseAction(rawAction),
     );
@@ -423,8 +479,8 @@ export async function requestRematch(userId: string, rawCode: string): Promise<R
     if (room.status !== "finished" || room.ended_reason !== "completed") {
       throw new ApiError(409, "REMATCH_UNAVAILABLE", "A rematch isn't available right now.");
     }
-    if (players.filter(isActive).length < engine.seats) {
-      throw new ApiError(409, "REMATCH_UNAVAILABLE", "Your opponent has left the room.");
+    if (players.filter(isActive).length < engine.minPlayers) {
+      throw new ApiError(409, "REMATCH_UNAVAILABLE", "Not enough players are left for a rematch.");
     }
     if (room.rematch_votes.includes(userId)) return toSnapshot(room, players, userId);
 
@@ -433,15 +489,8 @@ export async function requestRematch(userId: string, rawCode: string): Promise<R
       return toSnapshot(await updateRoom(db, room, { rematchVotes: votes }), players, userId);
     }
 
-    const start = engine.start(enginePlayers(players), room.options);
-    const updatedPlayers = await saveSecrets(db, room.id, players, start.secrets);
-    const restarted = await updateRoom(db, room, {
-      status: "playing",
-      endedReason: null,
-      state: start.state,
-      rematchVotes: [],
-    });
-    return toSnapshot(restarted, updatedPlayers, userId);
+    const restarted = await beginMatch(db, room, players, engine);
+    return toSnapshot(restarted.room, restarted.players, userId);
   });
 }
 
@@ -471,13 +520,34 @@ export async function leaveRoom(userId: string, rawCode: string): Promise<void> 
       "update public.game_room_players set left_at = now(), secret_state = null where room_id = $1 and user_id = $2",
       [room.id, userId],
     );
-    await updateRoom(
-      db,
-      room,
-      room.status === "playing"
-        ? { status: "finished", endedReason: "player_left", rematchVotes: [] }
-        : { rematchVotes: [] },
-    );
+    if (room.status !== "playing") {
+      await updateRoom(db, room, { rematchVotes: [] });
+      return;
+    }
+
+    // Games for 3+ players can carry on without the leaver if enough players remain.
+    const engine = getOnlineEngine(room.game_id);
+    if (engine?.removePlayer && others.length >= engine.minPlayers) {
+      const remaining = players.filter((p) => p.user_id !== userId);
+      const result = engine.removePlayer(
+        {
+          state: room.state,
+          options: room.options,
+          players: enginePlayers(remaining),
+          secrets: secretsOf(remaining),
+          ...engineEnvironment(),
+        },
+        userId,
+      );
+      await saveSecrets(db, room.id, remaining, result.secrets);
+      await updateRoom(
+        db,
+        room,
+        result.finished ? { state: result.state, status: "finished", endedReason: "completed" } : { state: result.state },
+      );
+      return;
+    }
+    await updateRoom(db, room, { status: "finished", endedReason: "player_left", rematchVotes: [] });
   });
 }
 

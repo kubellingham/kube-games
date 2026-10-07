@@ -10,9 +10,11 @@ const players = [
 
 type Context = EngineContext<RpsState, RpsSecret, RpsOptions>;
 
+const env = { random: () => 0, now: 0 };
+
 function startMatch(options: RpsOptions = { targetScore: 3 }): Context {
-  const { state, secrets } = rpsEngine.start(players, options);
-  return { state, options, players, secrets: secrets ?? {} };
+  const { state, secrets } = rpsEngine.start(players, options, env);
+  return { state, options, players, secrets: secrets ?? {}, ...env };
 }
 
 function apply(context: Context, actorId: string, raw: unknown): Context & { result: EngineResult<RpsState, RpsSecret> } {

@@ -22,8 +22,8 @@ describe("game registry", () => {
       expect(game.online).toBeDefined();
       const engine = GAME_ENGINES[game.id];
       expect(engine?.gameId).toBe(game.id);
-      expect(engine.seats).toBeGreaterThanOrEqual(game.players.min);
-      expect(engine.seats).toBeLessThanOrEqual(game.players.max);
+      expect(engine.minPlayers).toBe(game.players.min);
+      expect(engine.maxPlayers).toBe(game.players.max);
     }
   });
 

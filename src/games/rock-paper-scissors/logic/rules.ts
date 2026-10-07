@@ -1,3 +1,4 @@
+import { secureRandom } from "@/lib/random";
 import { MOVE_DETAILS, RPS_MOVES, type RpsMove } from "./moves";
 
 export type RoundOutcome = "win" | "lose" | "draw";
@@ -14,12 +15,6 @@ export function describeRound(move: RpsMove, opponentMove: RpsMove): string {
   const [winner, loser] =
     getOutcome(move, opponentMove) === "win" ? [move, opponentMove] : [opponentMove, move];
   return `${MOVE_DETAILS[winner].label} ${MOVE_DETAILS[winner].verb} ${MOVE_DETAILS[loser].label}`;
-}
-
-function secureRandom(): number {
-  const buffer = new Uint32Array(1);
-  globalThis.crypto.getRandomValues(buffer);
-  return buffer[0] / 2 ** 32;
 }
 
 /**

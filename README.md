@@ -1,9 +1,13 @@
 # Kube Games
 
 A game hub where players browse a library of games and play them solo against the
-computer or online against other people in real time. The first game is
-**Rock Paper Scissors**; the platform is built so new games plug in without
-touching the library, lobby or multiplayer plumbing.
+computer or online against other people in real time. The platform is built so new
+games plug in without touching the library, lobby or multiplayer plumbing.
+
+| Game | Players | Notes |
+| --- | --- | --- |
+| **Rock Paper Scissors** | 2 | Best of 1/3/5/7. Moves stay hidden on the server until both are in. |
+| **Snakes & Ladders** | 2–4 (or you + 1–3 bots) | The dice spins for as long as you hold it and rolls when you let go. |
 
 **Stack:** Next.js 16 (App Router, Cache Components) · React 19 · TypeScript ·
 Tailwind CSS v4 · Supabase (Postgres, anonymous Auth, Realtime) · Vitest · Playwright.
@@ -28,7 +32,7 @@ The vs-computer mode works without Supabase; online play needs it.
 | `npm run lint` | ESLint (Next.js + React Compiler rules) |
 | `npm test` | Unit tests (rules, engine, registry, validation) |
 | `npm run test:db` | Room service integration tests against the local Supabase database, including concurrency and RLS |
-| `npm run test:e2e` | Playwright: two real browsers playing each other, desktop and mobile |
+| `npm run test:e2e` | Playwright: real browsers (up to three at once) playing each other, desktop and mobile |
 | `npm run db:reset` | Recreate the local database from the migrations |
 
 ## Routes
@@ -48,7 +52,7 @@ Every route is generic: pages look the game up in the registry and render its co
 ```
 src/
   app/                         Routes (pages + API route handlers)
-    api/rooms/...              Room API: create, quick-match, get, join, actions, rematch, leave, heartbeat
+    api/rooms/...              Room API: create, quick-match, get, join, start, actions, rematch, leave, heartbeat
   games/
     registry.ts                Every game's metadata (the library is built from this)
     game-components.tsx        Each game's UI per mode, lazy-loaded
@@ -64,6 +68,10 @@ src/
       logic/                   Pure rules shared by every mode (+ tests)
       multiplayer/             Server engine and state types (+ tests)
       components/              Move picker, reveal, history, vs-computer and online UIs
+    snakes-and-ladders/
+      logic/                   Board layout, rules, roll descriptions (+ tests)
+      multiplayer/             Server engine (+ tests)
+      components/              Board, hold-to-roll dice, hop animation, vs-computer and online UIs
   server/
     auth.ts                    Verifies the caller's Supabase JWT
     db.ts                      Postgres pool and transactions
@@ -90,9 +98,11 @@ Browser B ──GET /api/rooms/K7F3QX──────────────�
   The server takes the user id from the verified JWT, never from the request body.
 - **Server authority.** All game rules run on the server. A game's `GameEngine`
   (`src/games/multiplayer/engine.ts`) is a set of pure functions: `start`,
-  `parseAction`, `applyAction`. The generic room service loads the room under a row lock,
+  `parseAction`, `applyAction`, and optionally `removePlayer`. The room service passes in a
+  cryptographically secure `random()` and the server's `now`, loads the room under a row lock,
   calls the engine and saves the result in one transaction. Clients only send intents
-  (`{ type: "submit_move", round: 3, move: "rock" }`) and never decide winners or scores.
+  (`{ type: "submit_move", round: 3, move: "rock" }`, `{ type: "roll", seq: 12 }`) and never
+  decide winners, scores or dice values.
 - **Hidden information.** State has two parts: public `game_rooms.state`, which every player
   in the room can see, and per-player `game_room_players.secret_state`, which no client role
   can read at all. A snapshot includes only the viewer's own secret. In Rock Paper Scissors a
@@ -101,7 +111,7 @@ Browser B ──GET /api/rooms/K7F3QX──────────────�
 - **Realtime.** Browsers subscribe to `postgres_changes` on their room row. RLS lets only
   seated players read a room, so Realtime only notifies members, and the row never holds
   secrets. On a change the client refetches its own snapshot. Presence on the same channel
-  shows who has the room open, and drives the "Opponent disconnected" banner.
+  shows who has the room open, and drives the "Bob disconnected" banner.
 - **Staying in sync.** Realtime can drop change events while the socket stays connected
   (e.g. when it restarts replication), so it is never the only signal. The client also
   refetches when (re)subscribing, when the tab becomes visible, and when the network
@@ -109,6 +119,14 @@ Browser B ──GET /api/rooms/K7F3QX──────────────�
   version, and a newer version triggers a refetch. Snapshots carry a version, so
   out-of-order responses are discarded. An e2e test drops all change events and checks
   that the game still progresses.
+- **Live signals.** Purely cosmetic moments that aren't game state, such as "Ann is holding
+  the dice", travel as Realtime broadcast messages between the players' browsers
+  (`sendSignal` / `signals` in `useGameRoom`). They never affect the outcome: in Snakes &
+  Ladders the hold only adds suspense, and the server rolls the dice when the player lets go.
+- **Turn timers.** Snapshots carry `serverTime`, so each browser knows how far its clock is
+  off. When a turn's 30 s run out, every browser in the room asks the server to roll for the
+  absent player (`claim_timeout`). The server checks the deadline against its own clock and
+  accepts only the first claim, so no background job is needed.
 
 ### Concurrency
 
@@ -122,13 +140,19 @@ operations on one room run strictly one after another:
 - Several players racing for the last seat: exactly one gets it; the rest get `ROOM_FULL`.
 - Quick match takes a per-game advisory lock, so two players searching at once are paired
   instead of each opening a room.
+- Turn-based actions carry the turn's sequence number. A double-tapped roll, or a roll racing
+  a timeout claim, is applied once; the loser gets `STALE_TURN`.
 
 `npm run test:db` exercises each of these with truly concurrent requests.
 
 ### Room lifecycle and cleanup
 
-- `waiting` → `playing` when every seat is filled (the game starts automatically).
-- `playing` → `finished` when the match is won (`completed`) or a player leaves (`player_left`).
+- `waiting` → `playing` when every seat is filled, or when the host presses **Start** once
+  at least the game's `minPlayers` have joined (for games like Snakes & Ladders where
+  `minPlayers < maxPlayers`). Quick match starts as soon as `minPlayers` are paired.
+- `playing` → `finished` when the match is won (`completed`), or when a player leaves and
+  the game can't go on (`player_left`). Games that implement `removePlayer` carry on without
+  the leaver while at least `minPlayers` remain.
 - A finished match can be restarted when every player votes for a rematch.
 - A host who cancels a waiting room deletes it. A room is deleted when its last player leaves.
 - A waiting room whose host hasn't sent a heartbeat for 90 s can't be joined ("Room has expired").
@@ -144,10 +168,12 @@ Say you're adding Tic Tac Toe (`tic-tac-toe`, already listed as "coming soon"):
    - `logic/`: pure rules (win detection, a computer opponent), with unit tests.
    - `components/computer-game.tsx`: the vs-computer UI.
    - For online play: `multiplayer/engine.ts`, which implements `GameEngine`
-     (`seats`, `parseOptions`, `parseAction`, `start`, `applyAction`; throw `GameRuleError`
-     for illegal moves), and `components/online-game.tsx`, which receives `OnlineGameProps`
-     (`room`, `act`, `rematch`, `onlineIds`, `leave`). Put anything players must not see
-     in secrets.
+     (`minPlayers`, `maxPlayers`, `parseOptions`, `parseAction`, `start`, `applyAction`,
+     and optionally `removePlayer`; throw `GameRuleError` for illegal moves; use the `random`
+     and `now` you're given rather than `Math.random()` or `Date.now()`), and
+     `components/online-game.tsx`, which receives `OnlineGameProps` (`room`, `act`, `rematch`,
+     `onlineIds`, `signals`, `sendSignal`, `clockOffset`, `leave`). Put anything players must
+     not see in secrets.
 2. **Register its metadata** in `src/games/registry.ts`: set `availability: "available"`
    and list its `modes`.
 3. **Register its implementations**: add its components to `GAME_COMPONENTS` in
@@ -155,7 +181,8 @@ Say you're adding Tic Tac Toe (`tic-tac-toe`, already listed as "coming soon"):
    `src/server/rooms/engines.ts`.
 
 No new routes, tables, API endpoints or Realtime channels are needed. `registry.test.ts`
-fails if a game lists a mode it doesn't implement.
+fails if a game lists a mode it doesn't implement, or if its engine's player counts don't
+match its metadata.
 
 ## Deploying
 
@@ -185,8 +212,9 @@ fails if a game lists a mode it doesn't implement.
 
 - API requests aren't rate-limited beyond Supabase's anonymous sign-in limits. Add rate
   limiting (e.g. at the edge) before a public launch.
-- Presence uses a public Realtime channel named after the room's id. The id is only ever
-  given to room members, and presence carries only player ids. Making the channel private
-  (Realtime authorization policies) would harden this further.
-- Rooms start automatically when full. Games with a variable player count (e.g. 2–8) would
-  add a host "start" action to the room service.
+- Presence and live signals use a public Realtime channel named after the room's id. The id
+  is only ever given to room members, and the channel carries only player ids and cosmetic
+  signals, never game state. Making the channel private (Realtime authorization policies)
+  would harden this further.
+- Snakes & Ladders has no pass-and-play mode (several people on one device); online rooms and
+  computer opponents cover multiplayer.

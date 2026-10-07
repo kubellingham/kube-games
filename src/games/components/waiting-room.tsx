@@ -1,12 +1,61 @@
+"use client";
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { errorMessage } from "../multiplayer/client/api";
 import type { RoomSnapshot } from "../multiplayer/types";
 import { gameRoutes } from "../routes";
 import { PlayerIndicator } from "./player-indicator";
 import { RoomCode } from "./room-code";
 
-export function WaitingRoom({ room }: { room: RoomSnapshot }) {
+function waitingCopy(room: RoomSnapshot, seated: number, isHost: boolean) {
+  if (room.isPublic) {
+    return {
+      title: "Finding you an opponent…",
+      body: "You'll be paired with the next player who starts a quick match.",
+    };
+  }
+  if (room.minPlayers === room.maxPlayers) {
+    return {
+      title: "Waiting for another player…",
+      body: "Share this code with your opponent. The game starts as soon as they join.",
+    };
+  }
+  const canStart = seated >= room.minPlayers;
+  return {
+    title: canStart ? (isHost ? "Ready when you are" : "Waiting for the host to start…") : "Waiting for players…",
+    body: `Share this code with friends. Up to ${room.maxPlayers} can play; ${
+      canStart
+        ? isHost
+          ? "start now, or wait for more players to join."
+          : "the host can start at any time."
+        : `the host can start once ${room.minPlayers} have joined.`
+    }`,
+  };
+}
+
+export function WaitingRoom({ room, onStart }: { room: RoomSnapshot; onStart: () => Promise<void> }) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const seats = Array.from({ length: room.maxPlayers }, (_, seat) =>
     room.players.find((p) => p.seat === seat && !p.hasLeft),
   );
+  const seated = seats.filter(Boolean).length;
+  const isHost = room.players.some((p) => p.userId === room.you.userId && p.isHost);
+  const { title, body } = waitingCopy(room, seated, isHost);
+  const showStart = isHost && !room.isPublic && room.minPlayers < room.maxPlayers;
+
+  const start = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      await onStart();
+    } catch (e) {
+      setError(errorMessage(e));
+      setStarting(false);
+    }
+  };
 
   return (
     <section
@@ -20,19 +69,16 @@ export function WaitingRoom({ room }: { room: RoomSnapshot }) {
         >
           {room.isPublic ? "⚡" : "⏳"}
         </div>
-        <h2 className="font-display text-2xl font-extrabold sm:text-3xl">
-          {room.isPublic ? "Finding you an opponent…" : "Waiting for another player…"}
-        </h2>
-        <p className="mx-auto mt-2 max-w-md text-zinc-400">
-          {room.isPublic
-            ? "You'll be paired with the next player who starts a quick match."
-            : "Share this code with your opponent. The game starts as soon as they join."}
-        </p>
+        <h2 className="font-display text-2xl font-extrabold sm:text-3xl">{title}</h2>
+        <p className="mx-auto mt-2 max-w-md text-zinc-400">{body}</p>
       </div>
 
       {!room.isPublic && <RoomCode code={room.code} invitePath={gameRoutes.room(room.gameId, room.code)} />}
 
-      <ul aria-label="Seats" className="grid w-full max-w-md grid-cols-2 gap-3">
+      <ul
+        aria-label="Seats"
+        className={`grid w-full gap-3 ${room.maxPlayers > 2 ? "max-w-xl grid-cols-2" : "max-w-md grid-cols-2"}`}
+      >
         {seats.map((player, seat) => (
           <li key={seat} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-left">
             {player ? (
@@ -53,6 +99,22 @@ export function WaitingRoom({ room }: { room: RoomSnapshot }) {
           </li>
         ))}
       </ul>
+
+      {showStart && (
+        <div className="flex flex-col items-center gap-2">
+          <Button size="lg" onClick={start} loading={starting} disabled={seated < room.minPlayers}>
+            Start game ({seated} {seated === 1 ? "player" : "players"})
+          </Button>
+          {seated < room.minPlayers && (
+            <p className="text-sm text-zinc-500">Needs at least {room.minPlayers} players.</p>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-rose-300">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

@@ -1,4 +1,5 @@
 import { rockPaperScissors } from "./rock-paper-scissors/definition";
+import { snakesAndLadders } from "./snakes-and-ladders/definition";
 import type { GameDefinition, GameModeId } from "./types";
 
 /**
@@ -10,6 +11,7 @@ import type { GameDefinition, GameModeId } from "./types";
  */
 export const GAMES: readonly GameDefinition[] = [
   rockPaperScissors,
+  snakesAndLadders,
   {
     id: "tic-tac-toe",
     name: "Tic Tac Toe",

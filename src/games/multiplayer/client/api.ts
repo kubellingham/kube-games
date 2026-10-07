@@ -105,6 +105,7 @@ export const roomsApi = {
   join: (code: string, displayName: string) => request<RoomSnapshot>(roomPath(code, "/join"), { displayName }),
   act: (code: string, action: unknown) => request<RoomSnapshot>(roomPath(code, "/actions"), { action }),
   rematch: (code: string) => request<RoomSnapshot>(roomPath(code, "/rematch"), {}),
+  start: (code: string) => request<RoomSnapshot>(roomPath(code, "/start"), {}),
   leave: (code: string) => request<void>(roomPath(code, "/leave"), {}),
   heartbeat: (code: string) => request<{ version: number }>(roomPath(code, "/heartbeat"), {}),
 };

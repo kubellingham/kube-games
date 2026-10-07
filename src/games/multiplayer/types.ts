@@ -18,6 +18,9 @@ export interface RoomSnapshot<State = unknown, Secret = unknown, Options = unkno
   status: RoomStatus;
   endedReason: RoomEndReason | null;
   isPublic: boolean;
+  /** The host can start once this many players are seated. */
+  minPlayers: number;
+  /** The game starts automatically when this many players are seated. */
   maxPlayers: number;
   options: Options;
   /** Increases on every change; lets clients ignore out-of-order snapshots. */
@@ -27,6 +30,8 @@ export interface RoomSnapshot<State = unknown, Secret = unknown, Options = unkno
   you: { userId: string; seat: number };
   /** Null until enough players have joined for the game to start. */
   game: { state: State; secret: Secret | null } | null;
+  /** Server clock when the snapshot was made, so clients can show accurate countdowns. */
+  serverTime: number;
 }
 
 /** What a non-member may see about a room, e.g. when opening an invite link. */

@@ -19,7 +19,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export const rpsEngine: GameEngine<RpsState, RpsSecret, RpsOptions, RpsAction> = {
   gameId: rockPaperScissors.id,
-  seats: 2,
+  minPlayers: 2,
+  maxPlayers: 2,
 
   parseOptions(raw) {
     if (raw === undefined || raw === null) return DEFAULT_RPS_OPTIONS;

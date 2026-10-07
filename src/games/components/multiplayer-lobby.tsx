@@ -116,7 +116,14 @@ export function MultiplayerLobby({ game }: { game: GameDefinition }) {
       )}
 
       <div className="grid gap-5 md:grid-cols-2">
-        <Panel title="Create a room" description="Get a code to share with a friend. The game starts when they join.">
+        <Panel
+          title="Create a room"
+          description={
+            game.players.max > 2
+              ? `Get a code to share with friends. Start the game once everyone's in (up to ${game.players.max}).`
+              : "Get a code to share with a friend. The game starts when they join."
+          }
+        >
           {RoomOptions && <RoomOptions value={options} onChange={setOptions} disabled={pending !== null} />}
           <Button
             size="lg"

@@ -1,5 +1,6 @@
 "use client";
 
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { HEARTBEAT_INTERVAL_MS } from "../rules";
@@ -11,7 +12,22 @@ export type RoomLoadState<State, Secret, Options> =
   /** The player isn't in the room yet, e.g. they opened an invite link. */
   | { phase: "join"; preview: RoomPreview | null }
   | { phase: "error"; error: RoomApiError }
-  | { phase: "ready"; room: RoomSnapshot<State, Secret, Options> };
+  | {
+      phase: "ready";
+      room: RoomSnapshot<State, Secret, Options>;
+      /** Server clock minus this device's clock, in ms (for countdowns). */
+      clockOffset: number;
+    };
+
+/**
+ * A short-lived message another player's browser broadcast to the room, e.g.
+ * "I'm holding the dice". Signals are cosmetic: anyone can send them, so they
+ * must never decide anything; the server's state always does.
+ */
+export interface RoomSignal {
+  data: unknown;
+  receivedAt: number;
+}
 
 /** "live" means Realtime is connected; otherwise the hook polls as a fallback. */
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
@@ -35,6 +51,8 @@ export function useGameRoom<State = unknown, Secret = unknown, Options = unknown
   const [serverUnreachable, setServerUnreachable] = useState(false);
   const connection: ConnectionStatus = serverUnreachable ? "reconnecting" : realtime;
   const [onlineIds, setOnlineIds] = useState<ReadonlySet<string> | null>(null);
+  const [signals, setSignals] = useState<Readonly<Record<string, RoomSignal>>>({});
+  const channelRef = useRef<RealtimeChannel | null>(null);
 
   const latest = useRef<{ id: string; version: number } | null>(null);
   const inFlight = useRef<Promise<void> | null>(null);
@@ -45,7 +63,11 @@ export function useGameRoom<State = unknown, Secret = unknown, Options = unknown
     // Responses can arrive out of order; never replace a newer view with an older one.
     if (current && current.id === room.id && room.version < current.version) return;
     latest.current = { id: room.id, version: room.version };
-    setLoad({ phase: "ready", room: room as RoomSnapshot<State, Secret, Options> });
+    setLoad({
+      phase: "ready",
+      room: room as RoomSnapshot<State, Secret, Options>,
+      clockOffset: room.serverTime - Date.now(),
+    });
   }, []);
 
   const fetchSnapshot = useCallback(async () => {
@@ -116,6 +138,11 @@ export function useGameRoom<State = unknown, Secret = unknown, Options = unknown
       .on("presence", { event: "sync" }, () => {
         setOnlineIds(new Set(Object.keys(channel.presenceState())));
       })
+      .on("broadcast", { event: "signal" }, ({ payload }) => {
+        const from = (payload as { from?: unknown } | undefined)?.from;
+        if (typeof from !== "string" || from === userId) return;
+        setSignals((current) => ({ ...current, [from]: { data: payload.data, receivedAt: Date.now() } }));
+      })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
           setRealtime("live");
@@ -127,7 +154,10 @@ export function useGameRoom<State = unknown, Secret = unknown, Options = unknown
         }
       });
 
+    channelRef.current = channel;
+
     return () => {
+      channelRef.current = null;
       void supabase.removeChannel(channel);
     };
   }, [roomId, userId, refresh]);
@@ -191,9 +221,19 @@ export function useGameRoom<State = unknown, Secret = unknown, Options = unknown
 
   const rematch = useCallback(async () => applySnapshot(await roomsApi.rematch(code)), [code, applySnapshot]);
 
+  const start = useCallback(async () => applySnapshot(await roomsApi.start(code)), [code, applySnapshot]);
+
+  /** Broadcasts a cosmetic signal to the other players in the room (best effort). */
+  const sendSignal = useCallback(
+    (data: unknown) => {
+      void channelRef.current?.send({ type: "broadcast", event: "signal", payload: { from: userId, data } });
+    },
+    [userId],
+  );
+
   const leave = useCallback(() => roomsApi.leave(code), [code]);
 
-  return { load, connection, onlineIds, refresh, join, act, rematch, leave };
+  return { load, connection, onlineIds, signals, sendSignal, refresh, join, act, rematch, start, leave };
 }
 
 export type GameRoomController<State = unknown, Secret = unknown, Options = unknown> = ReturnType<
