@@ -8,9 +8,25 @@ declare global {
 
 export type Db = PoolClient;
 
+/**
+ * DATABASE_URL, with its credentials optionally replaced by DATABASE_USER and
+ * DATABASE_PASSWORD. Keeping the password out of the URL means it never needs
+ * URL-encoding, so symbols in it can't break the connection string.
+ */
+function resolveConnectionString(): string | undefined {
+  const url = process.env.DATABASE_URL;
+  const user = process.env.DATABASE_USER;
+  const password = process.env.DATABASE_PASSWORD;
+  if (!url || (!user && !password)) return url;
+  const parsed = new URL(url);
+  if (user) parsed.username = encodeURIComponent(user);
+  if (password) parsed.password = encodeURIComponent(password);
+  return parsed.toString();
+}
+
 export function getPool(): Pool {
   if (!globalThis.__kubeGamesPool) {
-    const connectionString = process.env.DATABASE_URL;
+    const connectionString = resolveConnectionString();
     if (!connectionString) {
       throw new ApiError(503, "NOT_CONFIGURED", "Online play isn't set up on this server yet.");
     }

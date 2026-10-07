@@ -163,17 +163,23 @@ fails if a game lists a mode it doesn't implement.
    (`npx supabase db push`). In the dashboard, enable **Authentication → Sign In / Providers →
    Allow anonymous sign-ins**. Consider enabling CAPTCHA and reviewing the anonymous sign-in
    rate limit for production.
-2. **Environment variables** (e.g. in Vercel):
+2. **Server login:** the migrations create `kube_games_server`, a login that can only use the
+   game tables. Give it a password in the SQL editor:
+   `alter role kube_games_server password '<long random password>';`
+3. **Environment variables** (e.g. in Vercel):
 
    | Variable | Where | Value |
    | --- | --- | --- |
    | `NEXT_PUBLIC_SUPABASE_URL` | public | Project URL |
    | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | public | Publishable key (`sb_publishable_…`) or legacy anon key (`NEXT_PUBLIC_SUPABASE_ANON_KEY` also works) |
    | `DATABASE_URL` | **server only** | Pooler connection string, transaction mode (port 6543) |
+   | `DATABASE_USER` | **server only** | `kube_games_server.<project-ref>` (replaces the user in `DATABASE_URL`) |
+   | `DATABASE_PASSWORD` | **server only** | The server login's password (replaces the one in `DATABASE_URL`, so it never needs URL-encoding) |
    | `DATABASE_POOL_MAX` | server, optional | Connections per server instance (default 5) |
 
-   The browser only gets the URL and publishable key; all access is enforced by RLS and the
-   server. No service-role key is used anywhere.
+   Connections to a non-local database always use TLS. The browser only gets the URL and
+   publishable key; all access is enforced by RLS and the server. No service-role key is used
+   anywhere.
 
 ## Known limitations
 
