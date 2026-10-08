@@ -16,10 +16,7 @@ export function newGame(playerIds: readonly string[], now: number): SnlState {
   };
 }
 
-/** A fair die: maps a uniform [0, 1) number to 1–6. */
-export function dieValue(random: () => number): number {
-  return Math.min(6, Math.floor(random() * 6) + 1);
-}
+export { dieValue } from "@/lib/random";
 
 export function nextPlayer(order: readonly string[], current: string): string {
   const index = order.indexOf(current);

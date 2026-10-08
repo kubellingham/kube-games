@@ -8,6 +8,8 @@ games plug in without touching the library, lobby or multiplayer plumbing.
 | --- | --- | --- |
 | **Rock Paper Scissors** | 2 | Best of 1/3/5/7. Moves stay hidden on the server until both are in. |
 | **Snakes & Ladders** | 2–4 (or you + 1–3 bots) | The dice spins for as long as you hold it and rolls when you let go. |
+| **Ludo** | 2–4 (or you + 1–3 bots) | Hold-to-roll dice, captures and safe squares; your yard is always bottom left. |
+| **Connect Four** | 2 | Easy / medium / hard computer; online, you see where your opponent is aiming. |
 
 **Stack:** Next.js 16 (App Router, Cache Components) · React 19 · TypeScript ·
 Tailwind CSS v4 · Supabase (Postgres, anonymous Auth, Realtime) · Vitest · Playwright.
@@ -58,7 +60,8 @@ src/
     game-components.tsx        Each game's UI per mode, lazy-loaded
     types.ts, modes.ts, routes.ts
     components/                Generic UI: GameCard, GameLibrary, GameShell, ScoreBoard, PlayerIndicator,
-                               GameStatus, RoomCode, MultiplayerLobby, RoomScreen, WaitingRoom, ...
+                               GameStatus, RoomCode, MultiplayerLobby, RoomScreen, WaitingRoom,
+                               HoldDicePad (shared by the dice games), WinnerPanel, ...
     multiplayer/
       engine.ts                GameEngine interface implemented by every online game
       types.ts, rules.ts       Room snapshot types; room code, name and timing rules
@@ -71,7 +74,9 @@ src/
     snakes-and-ladders/
       logic/                   Board layout, rules, roll descriptions (+ tests)
       multiplayer/             Server engine (+ tests)
-      components/              Board, hold-to-roll dice, hop animation, vs-computer and online UIs
+      components/              Board, hop animation, vs-computer and online UIs
+    ludo/                      Same shape: board geometry, rules, computer player, engine, UIs
+    connect-four/              Same shape: rules, minimax computer player, engine, UIs
   server/
     auth.ts                    Verifies the caller's Supabase JWT
     db.ts                      Postgres pool and transactions
@@ -216,5 +221,7 @@ match its metadata.
   is only ever given to room members, and the channel carries only player ids and cosmetic
   signals, never game state. Making the channel private (Realtime authorization policies)
   would harden this further.
-- Snakes & Ladders has no pass-and-play mode (several people on one device); online rooms and
+- The board games have no pass-and-play mode (several people on one device); online rooms and
   computer opponents cover multiplayer.
+- Ludo ends when the first player gets all four tokens home (no ranking of the others), and
+  two tokens on one square don't form a blockade.

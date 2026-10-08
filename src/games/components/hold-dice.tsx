@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
-import { MAX_HOLD_MS } from "../logic/types";
+
+/** Holding the dice longer than this lets go automatically. */
+export const MAX_HOLD_MS = 5_000;
 
 /** Which cells of a 3×3 grid hold a pip, for each face. */
 const PIPS: Record<number, number[]> = {
@@ -147,7 +149,8 @@ export function HoldDicePad({
       onLostPointerCapture={release}
       onContextMenu={(event) => event.preventDefault()}
       className={cn(
-        "relative flex min-h-40 w-full touch-none flex-col items-center justify-center gap-3 overflow-hidden rounded-3xl border p-5 select-none [-webkit-touch-callout:none]",
+        // A compact row on phones (it stays pinned over the board), a tall card on wide screens.
+        "relative flex min-h-24 w-full touch-none items-center justify-center gap-4 overflow-hidden rounded-3xl border px-5 py-4 select-none [-webkit-touch-callout:none] lg:min-h-40 lg:flex-col lg:gap-3 lg:p-5",
         "transition duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300",
         canHold
           ? "cursor-pointer border-emerald-400/40 bg-emerald-400/10 hover:bg-emerald-400/15"
@@ -155,15 +158,15 @@ export function HoldDicePad({
         holding && "scale-[0.98] border-emerald-300 bg-emerald-400/20",
       )}
     >
-      <div key={active ? "spinning" : `landed-${landKey}`} className={cn("w-20 sm:w-24", !active && landKey !== null && "animate-dice-land")}>
+      <div key={active ? "spinning" : `landed-${landKey}`} className={cn("w-16 shrink-0 lg:w-24", !active && landKey !== null && "animate-dice-land")}>
         <DieFace value={active ? face : (value ?? 6)} spinning={active} className={!active && value === null ? "opacity-40" : undefined} />
       </div>
-      <span className="text-center">
+      <span className="min-w-0 text-left lg:text-center">
         <span className="block font-semibold">{holding ? "Let go to roll!" : title}</span>
         {!holding && detail && <span className="mt-0.5 block text-sm text-zinc-400">{detail}</span>}
       </span>
       {holding && (
-        <span aria-hidden className="absolute inset-x-8 bottom-3 h-1 overflow-hidden rounded-full bg-white/10">
+        <span aria-hidden className="absolute inset-x-8 bottom-2 h-1 lg:bottom-3 overflow-hidden rounded-full bg-white/10">
           <span className="block h-full origin-left animate-hold-progress rounded-full bg-emerald-300" />
         </span>
       )}

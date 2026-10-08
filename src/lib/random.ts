@@ -4,3 +4,8 @@ export function secureRandom(): number {
   globalThis.crypto.getRandomValues(buffer);
   return buffer[0] / 2 ** 32;
 }
+
+/** A fair die: maps a uniform [0, 1) number to 1–6. */
+export function dieValue(random: () => number): number {
+  return Math.min(6, Math.floor(random() * 6) + 1);
+}

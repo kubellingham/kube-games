@@ -55,6 +55,16 @@ export const GAME_COMPONENTS: Readonly<Record<string, GameComponents>> = {
     RoomOptions: dynamic(() => import("./rock-paper-scissors/components/room-options").then((m) => m.RoomOptions)),
     defaultRoomOptions: DEFAULT_RPS_OPTIONS,
   },
+  "connect-four": {
+    Computer: dynamic(() => import("./connect-four/components/computer-game").then((m) => m.ComputerGame), {
+      loading,
+    }),
+    Online: dynamic(() => import("./connect-four/components/online-game").then((m) => m.OnlineGame), { loading }),
+  },
+  ludo: {
+    Computer: dynamic(() => import("./ludo/components/computer-game").then((m) => m.ComputerGame), { loading }),
+    Online: dynamic(() => import("./ludo/components/online-game").then((m) => m.OnlineGame), { loading }),
+  },
   "snakes-and-ladders": {
     Computer: dynamic(
       () => import("./snakes-and-ladders/components/computer-game").then((m) => m.ComputerGame),

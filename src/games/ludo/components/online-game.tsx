@@ -4,79 +4,96 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useNow } from "@/lib/use-now";
 import { isRollingSignal, type RollSignal } from "../../components/roll-signal";
+import { WinnerPanel } from "../../components/winner-panel";
 import { errorMessage, isRoomApiError } from "../../multiplayer/client/api";
 import { useTurnTimeoutClaim } from "../../multiplayer/client/use-turn-timeout";
 import type { RoomSnapshot } from "../../multiplayer/types";
 import type { OnlineGameProps } from "../../game-components";
-import { TURN_TIMEOUT_MS, type SnlOptions, type SnlState } from "../logic/types";
-import { TOKEN_COLORS } from "./board";
-import { WinnerPanel } from "../../components/winner-panel";
-import { SnlGameView, type SnlPlayer } from "./game-view";
-import { useRollAnimation } from "./use-roll-animation";
+import { TURN_TIMEOUT_MS, type LudoOptions, type LudoState } from "../logic/types";
+import { LudoGameView, type LudoPlayer } from "./game-view";
+import { useMoveAnimation } from "./use-move-animation";
 
-type SnlRoom = RoomSnapshot<SnlState, null, SnlOptions>;
+type LudoRoom = RoomSnapshot<LudoState, null, LudoOptions>;
 
 const COUNTDOWN_FROM_S = 10;
 
 export function OnlineGame({ room: snapshot, act, rematch, onlineIds, signals, sendSignal, clockOffset, leave }: OnlineGameProps) {
-  const room = snapshot as SnlRoom;
+  const room = snapshot as LudoRoom;
   const state = room.game!.state;
   const meId = room.you.userId;
-  const animation = useRollAnimation(state);
+  const animation = useMoveAnimation(state);
   const now = useNow(500);
-  const [rollingSeq, setRollingSeq] = useState<number | null>(null);
+  const [sending, setSending] = useState<"roll" | "move" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rematchPending, setRematchPending] = useState(false);
 
   const finished = room.status === "finished";
   const myTurn = state.turn === meId && !finished;
-  const canRoll = myTurn && !animation.animating && rollingSeq === null;
+  const canRoll = myTurn && state.phase === "roll" && !animation.animating && sending === null;
+  const canPick = myTurn && state.phase === "move" && !animation.animating && sending === null;
   // The deadline in this device's clock.
   const deadline = state.turnStartedAt + TURN_TIMEOUT_MS - clockOffset;
 
   useTurnTimeoutClaim({
-    turnKey: state.rollCount,
+    turnKey: state.step,
     deadline,
     enabled: !finished,
-    claim: () => act({ type: "claim_timeout", seq: state.rollCount }),
+    claim: () => act({ type: "claim_timeout", step: state.step }),
   });
 
-  const players: SnlPlayer[] = room.players.map((p) => ({
-    id: p.userId,
-    name: p.displayName,
-    color: TOKEN_COLORS[p.seat % TOKEN_COLORS.length],
-    isYou: p.userId === meId,
-    hasLeft: p.hasLeft,
-    connection: onlineIds === null ? "unknown" : onlineIds.has(p.userId) ? "online" : "offline",
-  }));
+  const players: LudoPlayer[] = [...room.players]
+    .sort((a, b) => a.seat - b.seat)
+    .flatMap((p) =>
+      state.colors[p.userId] === undefined
+        ? []
+        : [
+            {
+              id: p.userId,
+              name: p.displayName,
+              color: state.colors[p.userId],
+              isYou: p.userId === meId,
+              hasLeft: p.hasLeft,
+              connection: onlineIds === null ? "unknown" : onlineIds.has(p.userId) ? "online" : "offline",
+            },
+          ],
+    );
   const turnPlayer = players.find((p) => p.id === state.turn);
 
   // Another player's dice spins while their browser says they're holding it.
-  const othersRolling = !myTurn && !finished && isRollingSignal(signals[state.turn], state.rollCount, now);
-  const rollingId = rollingSeq !== null ? meId : othersRolling ? state.turn : null;
+  const othersRolling =
+    !myTurn && !finished && state.phase === "roll" && isRollingSignal(signals[state.turn], state.step, now);
+  const rollingId = sending === "roll" ? meId : othersRolling ? state.turn : null;
 
   const secondsLeft = now === null ? null : Math.ceil((deadline - now) / 1000);
   const countdown =
     !finished && secondsLeft !== null && secondsLeft > 0 && secondsLeft <= COUNTDOWN_FROM_S
-      ? `Auto-roll in ${secondsLeft}s`
+      ? `Auto-play in ${secondsLeft}s`
       : undefined;
 
-  const onHoldStart = () => sendSignal({ kind: "holding", seq: state.rollCount } satisfies RollSignal);
-
-  const onRelease = async () => {
-    if (state.turn !== meId || finished) return;
-    const seq = state.rollCount;
-    sendSignal({ kind: "released", seq } satisfies RollSignal);
-    setRollingSeq(seq);
+  const send = async (kind: "roll" | "move", action: object) => {
+    setSending(kind);
     setError(null);
     try {
-      await act({ type: "roll", seq });
+      await act(action);
     } catch (e) {
-      // If the turn timed out while the dice was held, the game already rolled for you.
+      // If the turn timed out meanwhile, the game already played it.
       if (!(isRoomApiError(e) && e.code === "STALE_TURN")) setError(errorMessage(e));
     } finally {
-      setRollingSeq(null);
+      setSending(null);
     }
+  };
+
+  const onHoldStart = () => sendSignal({ kind: "holding", seq: state.step } satisfies RollSignal);
+
+  const onRelease = () => {
+    if (!myTurn || state.phase !== "roll") return;
+    sendSignal({ kind: "released", seq: state.step } satisfies RollSignal);
+    void send("roll", { type: "roll", step: state.step });
+  };
+
+  const onPick = (token: number) => {
+    if (!canPick) return;
+    void send("move", { type: "move", step: state.step, token });
   };
 
   const requestRematch = async () => {
@@ -95,26 +112,37 @@ export function OnlineGame({ room: snapshot, act, rematch, onlineIds, signals, s
   const votes = room.rematchVotes.length;
   const iVoted = room.rematchVotes.includes(meId);
   const winner = players.find((p) => p.id === state.winnerId);
+  const turnName = turnPlayer?.name ?? "the next player";
 
   const diceTitle = myTurn
-    ? rollingSeq !== null
+    ? sending === "roll"
       ? "Rolling…"
       : animation.animating
         ? "Moving…"
-        : "Your turn: hold to roll"
+        : state.phase === "move"
+          ? "Pick a token to move"
+          : "Your turn: hold to roll"
     : othersRolling
-      ? `${turnPlayer?.name ?? "Someone"} is rolling…`
-      : `Waiting for ${turnPlayer?.name ?? "the next player"}…`;
+      ? `${turnName} is rolling…`
+      : state.phase === "move" && !animation.animating
+        ? `${turnName} is choosing a token…`
+        : `Waiting for ${turnName}…`;
 
   return (
-    <SnlGameView
+    <LudoGameView
       state={state}
       players={players}
+      viewerColor={state.colors[meId] ?? 0}
       animation={animation}
       rollingId={rollingId}
       canRoll={canRoll}
+      canPick={canPick}
+      onPick={onPick}
       diceTitle={diceTitle}
-      diceDetail={countdown ?? (canRoll ? "Press and hold, then let go. On a keyboard, hold Space." : undefined)}
+      diceDetail={
+        countdown ??
+        (canRoll ? "Press and hold, then let go. On a keyboard, hold Space." : canPick ? "Tap a glowing token." : undefined)
+      }
       onHoldStart={onHoldStart}
       onRelease={onRelease}
       error={error}
@@ -132,7 +160,7 @@ export function OnlineGame({ room: snapshot, act, rematch, onlineIds, signals, s
                 ? `Waiting for the others to agree to a rematch (${votes}/${active.length}).`
                 : votes > 0
                   ? `${votes} of ${active.length} want a rematch.`
-                  : "First to land on 100."
+                  : "First to get all four tokens home."
             }
           >
             <Button onClick={requestRematch} loading={rematchPending} disabled={iVoted || active.length < room.minPlayers}>

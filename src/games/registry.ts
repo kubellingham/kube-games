@@ -1,3 +1,5 @@
+import { connectFour } from "./connect-four/definition";
+import { ludo } from "./ludo/definition";
 import { rockPaperScissors } from "./rock-paper-scissors/definition";
 import { snakesAndLadders } from "./snakes-and-ladders/definition";
 import type { GameDefinition, GameModeId } from "./types";
@@ -12,6 +14,8 @@ import type { GameDefinition, GameModeId } from "./types";
 export const GAMES: readonly GameDefinition[] = [
   rockPaperScissors,
   snakesAndLadders,
+  ludo,
+  connectFour,
   {
     id: "tic-tac-toe",
     name: "Tic Tac Toe",
@@ -23,18 +27,6 @@ export const GAMES: readonly GameDefinition[] = [
     modes: ["computer", "online"],
     availability: "coming-soon",
     theme: "sky",
-  },
-  {
-    id: "connect-four",
-    name: "Connect Four",
-    tagline: "Drop, stack and connect four.",
-    description: "Line up four discs before your opponent does.",
-    icon: "🔴",
-    category: "Strategy",
-    players: { min: 2, max: 2 },
-    modes: ["computer", "online"],
-    availability: "coming-soon",
-    theme: "amber",
   },
   {
     id: "memory-match",

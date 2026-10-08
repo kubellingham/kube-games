@@ -42,5 +42,3 @@ export type SnlOptions = Record<string, never>;
 
 /** A player who doesn't roll within this time has the game roll for them. */
 export const TURN_TIMEOUT_MS = 30_000;
-/** Holding the dice longer than this lets go automatically. */
-export const MAX_HOLD_MS = 5_000;

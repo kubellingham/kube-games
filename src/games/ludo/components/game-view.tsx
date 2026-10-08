@@ -1,18 +1,20 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { HoldDicePad } from "../../components/hold-dice";
 import type { Connection } from "../../components/player-indicator";
+import { cellOf, COLOR_HEX } from "../logic/board";
 import { describeRoll } from "../logic/describe-roll";
-import type { SnlState } from "../logic/types";
-import { SnlBoard } from "./board";
-import type { RollAnimation } from "./use-roll-animation";
+import { targetStep } from "../logic/rules";
+import { HOME, type LudoColor, type LudoState } from "../logic/types";
+import { LudoBoard, type BoardToken } from "./board";
+import type { MoveAnimation } from "./use-move-animation";
 
-export interface SnlPlayer {
+export interface LudoPlayer {
   id: string;
   name: string;
-  color: string;
+  color: LudoColor;
   isYou: boolean;
   isBot?: boolean;
   connection?: Connection;
@@ -22,12 +24,12 @@ export interface SnlPlayer {
 function PlayersPanel({
   players,
   state,
-  positions,
+  tokens,
   rollingId,
 }: {
-  players: SnlPlayer[];
-  state: SnlState;
-  positions: Record<string, number>;
+  players: LudoPlayer[];
+  state: LudoState;
+  tokens: MoveAnimation["tokens"];
   rollingId: string | null;
 }) {
   return (
@@ -35,7 +37,10 @@ function PlayersPanel({
       <ul className="flex flex-col gap-1">
         {players.map((player) => {
           const isTurn = !state.winnerId && state.turn === player.id && !player.hasLeft;
-          const position = positions[player.id] ?? 0;
+          const steps = tokens[player.id] ?? [];
+          const home = steps.filter((step) => step === HOME).length;
+          // Overall progress: every token's steps out of the whole journey.
+          const progress = steps.reduce((sum, step) => sum + Math.max(0, step + 1), 0) / (4 * (HOME + 1));
           return (
             <li
               key={player.id}
@@ -48,7 +53,7 @@ function PlayersPanel({
             >
               <span
                 className="relative grid size-8 shrink-0 place-items-center rounded-full border-2 border-white text-xs font-black text-ink-950"
-                style={{ backgroundColor: player.color }}
+                style={{ backgroundColor: COLOR_HEX[player.color] }}
               >
                 {player.isBot ? "🤖" : player.name.trim().charAt(0).toUpperCase() || "?"}
                 {player.connection && player.connection !== "unknown" && !player.hasLeft && (
@@ -66,26 +71,38 @@ function PlayersPanel({
                 <span className={cn("block truncate text-sm font-semibold", player.hasLeft && "line-through")}>
                   {player.name}
                   {player.isYou && player.name !== "You" && (
-                    <span className="ml-1.5 text-xs font-medium text-emerald-300">(you)</span>
+                    <span className="ml-1.5 text-xs font-medium text-sky-300">(you)</span>
                   )}
                 </span>
                 <span className="block text-xs text-zinc-400">
                   {player.hasLeft
                     ? "Left the game"
-                    : rollingId === player.id
-                      ? "Rolling…"
-                      : isTurn
-                        ? player.isYou
-                          ? "Your turn"
-                          : "Their turn"
-                        : state.winnerId === player.id
-                          ? "Winner 🏆"
+                    : state.winnerId === player.id
+                      ? "Winner 🏆"
+                      : rollingId === player.id
+                        ? "Rolling…"
+                        : isTurn
+                          ? state.phase === "move"
+                            ? "Choosing a token…"
+                            : player.isYou
+                              ? "Your turn"
+                              : "Their turn"
                           : " "}
                 </span>
+                {!player.hasLeft && (
+                  <span aria-hidden className="mt-1 block h-1 overflow-hidden rounded-full bg-white/10">
+                    <span
+                      className="block h-full rounded-full transition-[width] duration-500"
+                      style={{ width: `${progress * 100}%`, backgroundColor: COLOR_HEX[player.color] }}
+                    />
+                  </span>
+                )}
               </span>
-              <span className="text-right text-xs text-zinc-400 tabular-nums">
-                {player.hasLeft ? "" : position === 0 ? "Start" : <>Square <b className="text-sm text-zinc-100">{position}</b></>}
-              </span>
+              {!player.hasLeft && (
+                <span className="text-right text-xs text-zinc-400 tabular-nums">
+                  <b className="text-sm text-zinc-100">{home}</b>/4 home
+                </span>
+              )}
             </li>
           );
         })}
@@ -94,13 +111,16 @@ function PlayersPanel({
   );
 }
 
-/** Board, dice and players for one game of Snakes & Ladders, wherever the state comes from. */
-export function SnlGameView({
+/** Board, dice and players for one game of Ludo, wherever the state comes from. */
+export function LudoGameView({
   state,
   players,
+  viewerColor,
   animation,
   rollingId,
   canRoll,
+  canPick,
+  onPick,
   diceTitle,
   diceDetail,
   onHoldStart,
@@ -110,12 +130,17 @@ export function SnlGameView({
   footer,
   error,
 }: {
-  state: SnlState;
-  players: SnlPlayer[];
-  animation: RollAnimation;
+  state: LudoState;
+  players: LudoPlayer[];
+  /** The board is turned so this color's yard is bottom left. */
+  viewerColor: LudoColor;
+  animation: MoveAnimation;
   /** Player whose dice is visibly spinning (holding, or a roll in flight). */
   rollingId: string | null;
   canRoll: boolean;
+  /** The viewer may pick one of `state.movable` now. */
+  canPick: boolean;
+  onPick: (token: number) => void;
   diceTitle: string;
   diceDetail?: string;
   onHoldStart?: () => void;
@@ -127,26 +152,51 @@ export function SnlGameView({
   footer?: ReactNode;
   error?: string | null;
 }) {
+  const [preview, setPreview] = useState<number | null>(null);
   const byId = new Map(players.map((p) => [p.id, p]));
-  const { shownRoll, positions } = animation;
-  const roller = shownRoll ? byId.get(shownRoll.playerId) : undefined;
+  const { shownRoll } = animation;
   const showFinished = finished && !animation.animating;
+  const me = players.find((p) => p.isYou);
+  const turnColor = state.winnerId ? null : (byId.get(state.turn)?.color ?? null);
 
-  const tokens = players
-    .filter((p) => !p.hasLeft && p.id in positions)
-    .map((p) => ({
-      id: p.id,
-      label: p.isBot ? "🤖" : p.name.trim().charAt(0).toUpperCase() || "?",
-      color: p.color,
-      position: positions[p.id],
-      active: !state.winnerId && state.turn === p.id,
-      jumping: animation.jumpingPlayerId === p.id,
-    }));
+  const tokens: BoardToken[] = players.flatMap((player) =>
+    player.hasLeft || !animation.tokens[player.id]
+      ? []
+      : animation.tokens[player.id].map((step, token) => ({
+          playerId: player.id,
+          token,
+          color: player.color,
+          step,
+          movable: canPick && player.isYou && state.turn === player.id && state.movable.includes(token),
+          moving: animation.moving?.playerId === player.id && animation.moving.token === token,
+          returning: animation.returning.some((r) => r.playerId === player.id && r.token === token),
+        })),
+  );
+
+  // Where the token being pointed at would land.
+  const previewStep =
+    canPick && me && preview !== null && state.movable.includes(preview)
+      ? targetStep(state.tokens[me.id][preview], state.history[0].value)
+      : null;
+  const target = previewStep !== null && me ? cellOf(me.color, previewStep) : null;
 
   return (
     <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_21rem]">
       <div className="mx-auto w-full max-w-[34rem]">
-        <SnlBoard tokens={tokens} highlight={animation.animating ? null : (shownRoll?.to ?? null)} />
+        <LudoBoard
+          tokens={tokens}
+          viewerColor={viewerColor}
+          activeColor={turnColor}
+          labels={players
+            .filter((p) => !p.hasLeft)
+            .map((p) => ({ color: p.color, name: p.isYou ? "You" : p.name, active: p.color === turnColor }))}
+          target={target}
+          onPick={(token) => {
+            setPreview(null);
+            onPick(token);
+          }}
+          onPreview={setPreview}
+        />
       </div>
 
       <div className="flex flex-col gap-4">
@@ -173,9 +223,9 @@ export function SnlGameView({
           data-testid="last-roll"
           className="min-h-12 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-zinc-300"
         >
-          {shownRoll && roller
-            ? describeRoll(shownRoll, roller.name, roller.isYou)
-            : "Hold the dice to roll. First to land exactly on 100 wins."}
+          {shownRoll
+            ? describeRoll(shownRoll, (id) => byId.get(id)?.name ?? "Someone", me?.id ?? null)
+            : "Hold the dice to roll. You need a 6 to bring a token out."}
         </p>
 
         {error && (
@@ -184,7 +234,7 @@ export function SnlGameView({
           </p>
         )}
 
-        <PlayersPanel players={players} state={state} positions={positions} rollingId={rollingId} />
+        <PlayersPanel players={players} state={state} tokens={animation.tokens} rollingId={rollingId} />
         {footer}
       </div>
     </div>

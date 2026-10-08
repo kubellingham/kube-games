@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
-import { secureRandom } from "@/lib/random";
-import { useSavedPlayerName } from "../../multiplayer/client/player-name";
-import { dieValue, newGame, playRoll } from "../logic/rules";
-import { TOKEN_COLORS } from "./board";
+import { dieValue, secureRandom } from "@/lib/random";
 import { WinnerPanel } from "../../components/winner-panel";
-import { SnlGameView, type SnlPlayer } from "./game-view";
-import { useRollAnimation } from "./use-roll-animation";
+import { useSavedPlayerName } from "../../multiplayer/client/player-name";
+import { chooseMove } from "../logic/ai";
+import { applyMove, applyRoll, newGame } from "../logic/rules";
+import { LudoGameView, type LudoPlayer } from "./game-view";
+import { useMoveAnimation } from "./use-move-animation";
 
 const YOU = "you";
 const COMPUTERS = [
@@ -20,6 +20,8 @@ const COMPUTERS = [
 
 /** How long a computer player "holds" the dice before rolling. */
 const COMPUTER_HOLD_MS = 900;
+/** How long a computer player "thinks" before picking a token. */
+const COMPUTER_PICK_MS = 600;
 
 function LocalMatch({ computers, onChangeOpponents }: { computers: number; onChangeOpponents: () => void }) {
   const savedName = useSavedPlayerName();
@@ -27,26 +29,48 @@ function LocalMatch({ computers, onChangeOpponents }: { computers: number; onCha
   const ids = [YOU, ...opponents.map((c) => c.id)];
   const [state, setState] = useState(() => newGame(ids, 0));
   const [rollingComputer, setRollingComputer] = useState<string | null>(null);
-  const animation = useRollAnimation(state);
+  const animation = useMoveAnimation(state);
 
   const finished = state.winnerId !== null;
   const myTurn = state.turn === YOU && !finished;
-  const canRoll = myTurn && !animation.animating;
+  const canRoll = myTurn && state.phase === "roll" && !animation.animating;
+  const canPick = myTurn && state.phase === "move" && !animation.animating;
+  const rollingId = rollingComputer === state.turn ? rollingComputer : null;
 
-  const players: SnlPlayer[] = [
-    { id: YOU, name: savedName || "You", color: TOKEN_COLORS[0], isYou: true },
-    ...opponents.map((c, i) => ({ id: c.id, name: c.name, color: TOKEN_COLORS[i + 1], isYou: false, isBot: true })),
+  const players: LudoPlayer[] = [
+    { id: YOU, name: savedName || "You", color: state.colors[YOU], isYou: true },
+    ...opponents.map((c) => ({ id: c.id, name: c.name, color: state.colors[c.id], isYou: false, isBot: true })),
   ];
 
   const rollFor = (playerId: string) =>
     setState((current) =>
-      current.turn === playerId && !current.winnerId ? playRoll(current, dieValue(secureRandom), Date.now()) : current,
+      current.turn === playerId && current.phase === "roll" && !current.winnerId
+        ? applyRoll(current, dieValue(secureRandom), Date.now())
+        : current,
     );
 
-  // Computer turns: hold the dice for a moment once the previous move has finished, then roll.
+  const moveFor = (playerId: string, token: number) =>
+    setState((current) =>
+      current.turn === playerId && current.phase === "move" && current.movable.includes(token)
+        ? applyMove(current, token, Date.now())
+        : current,
+    );
+
+  const restart = () => {
+    setRollingComputer(null);
+    setState(newGame(ids, 0));
+  };
+
+  // Computer turns: once the previous move has played out, hold the dice for a moment
+  // and roll, then (if there's a choice) think briefly and pick a token.
   useEffect(() => {
     const computer = state.turn;
     if (finished || animation.animating || computer === YOU) return;
+    if (state.phase === "move") {
+      // A little variety in the computer's choices; it needn't be secure.
+      const pick = setTimeout(() => moveFor(computer, chooseMove(state, Math.random)), COMPUTER_PICK_MS);
+      return () => clearTimeout(pick);
+    }
     const hold = setTimeout(() => setRollingComputer(computer), 400);
     const roll = setTimeout(
       () => {
@@ -59,36 +83,49 @@ function LocalMatch({ computers, onChangeOpponents }: { computers: number; onCha
       clearTimeout(hold);
       clearTimeout(roll);
     };
-  }, [state.turn, state.rollCount, finished, animation.animating]);
+  }, [state, finished, animation.animating]);
 
   const turnName = players.find((p) => p.id === state.turn)?.name ?? "";
   const winner = players.find((p) => p.id === state.winnerId);
 
   return (
-    <SnlGameView
+    <LudoGameView
       state={state}
       players={players}
+      viewerColor={state.colors[YOU]}
       animation={animation}
-      rollingId={rollingComputer}
+      rollingId={rollingId}
       canRoll={canRoll}
+      canPick={canPick}
+      onPick={(token) => moveFor(YOU, token)}
       diceTitle={
         myTurn
           ? animation.animating
             ? "Moving…"
-            : "Your turn: hold to roll"
-          : rollingComputer
+            : state.phase === "move"
+              ? "Pick a token to move"
+              : "Your turn: hold to roll"
+          : rollingId
             ? `${turnName} is rolling…`
-            : `${turnName}'s turn`
+            : state.phase === "move" && !animation.animating
+              ? `${turnName} is choosing…`
+              : `${turnName}'s turn`
       }
-      diceDetail={canRoll ? "Press and hold, then let go. On a keyboard, hold Space." : undefined}
+      diceDetail={
+        canRoll
+          ? "Press and hold, then let go. On a keyboard, hold Space."
+          : canPick
+            ? "Tap a glowing token."
+            : undefined
+      }
       onRelease={() => rollFor(YOU)}
       finished={finished}
       finishedPanel={
         <WinnerPanel
           title={winner?.isYou ? "You win!" : `${winner?.name ?? "Someone"} wins!`}
-          detail={winner?.isYou ? "First to 100. Nicely played." : "So close. Fancy a rematch?"}
+          detail={winner?.isYou ? "All four tokens home. Nicely played." : "So close. Fancy a rematch?"}
         >
-          <Button onClick={() => setState(newGame(ids, 0))}>Play again</Button>
+          <Button onClick={restart}>Play again</Button>
           <Button variant="secondary" onClick={onChangeOpponents}>
             Change opponents
           </Button>
@@ -97,7 +134,7 @@ function LocalMatch({ computers, onChangeOpponents }: { computers: number; onCha
       footer={
         !finished && (
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setState(newGame(ids, 0))}>
+            <Button variant="ghost" size="sm" onClick={restart}>
               ↺ Restart
             </Button>
             <Button variant="ghost" size="sm" onClick={onChangeOpponents}>
